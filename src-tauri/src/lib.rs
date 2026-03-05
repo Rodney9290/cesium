@@ -314,6 +314,162 @@ fn get_packet_details(frame_number: u64, state: tauri::State<'_, Mutex<AppState>
 }
 
 #[tauri::command]
+fn follow_tcp_stream(flow_index: u32, state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let pcap_path = state.lock()
+        .map_err(|e| e.to_string())?
+        .last_pcap_path.clone()
+        .ok_or_else(|| "No capture loaded".to_string())?;
+
+    let output = std::process::Command::new("tshark")
+        .args([
+            "-r", &pcap_path,
+            "-z", &format!("follow,tcp,ascii,{}", flow_index),
+            "-q",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run tshark: {}", e))?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[tauri::command]
+fn get_tls_info(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let pcap_path = state.lock()
+        .map_err(|e| e.to_string())?
+        .last_pcap_path.clone()
+        .ok_or_else(|| "No capture loaded".to_string())?;
+
+    let output = std::process::Command::new("tshark")
+        .args([
+            "-r", &pcap_path,
+            "-Y", "tls.handshake.type == 11",
+            "-T", "fields",
+            "-e", "frame.number",
+            "-e", "ip.src",
+            "-e", "ip.dst",
+            "-e", "x509ce.dNSName",
+            "-e", "x509af.utcTime",
+            "-e", "x509sat.uTF8String",
+            "-e", "tls.handshake.ciphersuite",
+            "-e", "tls.record.version",
+            "-E", "header=y",
+            "-E", "separator=|",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run tshark: {}", e))?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[tauri::command]
+fn get_dns_timeline(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let pcap_path = state.lock()
+        .map_err(|e| e.to_string())?
+        .last_pcap_path.clone()
+        .ok_or_else(|| "No capture loaded".to_string())?;
+
+    let output = std::process::Command::new("tshark")
+        .args([
+            "-r", &pcap_path,
+            "-Y", "dns",
+            "-T", "fields",
+            "-e", "frame.number",
+            "-e", "frame.time_relative",
+            "-e", "ip.src",
+            "-e", "ip.dst",
+            "-e", "dns.qry.name",
+            "-e", "dns.qry.type",
+            "-e", "dns.flags.response",
+            "-e", "dns.a",
+            "-e", "dns.aaaa",
+            "-e", "dns.cname",
+            "-e", "dns.flags.rcode",
+            "-e", "dns.time",
+            "-E", "header=y",
+            "-E", "separator=|",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run tshark: {}", e))?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[tauri::command]
+fn get_http_payloads(state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let pcap_path = state.lock()
+        .map_err(|e| e.to_string())?
+        .last_pcap_path.clone()
+        .ok_or_else(|| "No capture loaded".to_string())?;
+
+    let output = std::process::Command::new("tshark")
+        .args([
+            "-r", &pcap_path,
+            "-Y", "http",
+            "-T", "fields",
+            "-e", "frame.number",
+            "-e", "frame.time_relative",
+            "-e", "ip.src",
+            "-e", "ip.dst",
+            "-e", "http.request.method",
+            "-e", "http.request.uri",
+            "-e", "http.response.code",
+            "-e", "http.content_type",
+            "-e", "http.content_length",
+            "-e", "http.host",
+            "-e", "http.user_agent",
+            "-e", "http.server",
+            "-E", "header=y",
+            "-E", "separator=|",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run tshark: {}", e))?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[tauri::command]
+fn get_stream_data(src_ip: String, src_port: u16, dst_ip: String, dst_port: u16, state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let pcap_path = state.lock()
+        .map_err(|e| e.to_string())?
+        .last_pcap_path.clone()
+        .ok_or_else(|| "No capture loaded".to_string())?;
+
+    // First find the TCP stream index for this flow
+    let filter = format!(
+        "(ip.addr == {} && ip.addr == {} && tcp.port == {} && tcp.port == {})",
+        src_ip, dst_ip, src_port, dst_port
+    );
+
+    let output = std::process::Command::new("tshark")
+        .args([
+            "-r", &pcap_path,
+            "-Y", &filter,
+            "-T", "fields",
+            "-e", "tcp.stream",
+            "-c", "1",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run tshark: {}", e))?;
+
+    let stream_index = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stream_index.is_empty() {
+        return Err("Could not find TCP stream for this flow".to_string());
+    }
+
+    // Now follow that stream
+    let follow_output = std::process::Command::new("tshark")
+        .args([
+            "-r", &pcap_path,
+            "-z", &format!("follow,tcp,ascii,{}", stream_index),
+            "-q",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run tshark: {}", e))?;
+
+    Ok(String::from_utf8_lossy(&follow_output.stdout).to_string())
+}
+
+#[tauri::command]
 fn start_capture(interface: String, state: tauri::State<'_, Mutex<AppState>>) -> Result<String, String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
     if guard.capture_child.is_some() {
@@ -451,7 +607,12 @@ pub fn run() {
             stop_capture,
             list_interfaces,
             get_packet_hex,
-            get_packet_details
+            get_packet_details,
+            follow_tcp_stream,
+            get_tls_info,
+            get_dns_timeline,
+            get_http_payloads,
+            get_stream_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cesium");

@@ -1445,3 +1445,584 @@ body {
   background: var(--bg-tertiary);
   color: var(--text-primary);
 }
+
+/* Display Filter Bar */
+.display-filter {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  outline: none;
+}
+
+.display-filter:focus {
+  border-color: var(--accent);
+}
+
+.display-filter.filter-error {
+  border-color: var(--error);
+  background: rgba(255, 59, 48, 0.05);
+}
+
+.display-filter::placeholder {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* GeoIP Map */
+.geo-map {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.geo-map-svg {
+  width: 100%;
+  max-height: 400px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+}
+
+.geo-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.geo-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.geo-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.geo-region {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.geo-count {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+/* Flow Replay */
+.flow-replay {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.replay-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+}
+
+.replay-counter {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  margin-left: 8px;
+}
+
+.replay-speed {
+  padding: 2px 6px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  margin-left: auto;
+}
+
+.replay-progress {
+  height: 3px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.replay-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.1s linear;
+}
+
+.replay-conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.replay-message {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  transition: all 0.15s;
+}
+
+.replay-message.outgoing {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary));
+  margin-right: 40px;
+}
+
+.replay-message.incoming {
+  background: color-mix(in srgb, var(--success) 8%, var(--bg-secondary));
+  margin-left: 40px;
+}
+
+.replay-message.current {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.replay-msg-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.replay-direction {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.replay-direction.out { color: var(--accent); }
+.replay-direction.in { color: var(--success); }
+
+.replay-time {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.replay-len {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-left: auto;
+}
+
+.replay-msg-info {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+/* DNS Timeline */
+.dns-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dns-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dns-error-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.dns-error-toggle input {
+  accent-color: var(--accent);
+}
+
+.dns-count {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-left: auto;
+}
+
+.dns-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.dns-entry {
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+}
+
+.dns-entry.dns-error {
+  border-color: var(--error);
+  background: rgba(255, 59, 48, 0.03);
+}
+
+.dns-query-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.dns-frame {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.dns-time {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.dns-name {
+  font-weight: 500;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.dns-type {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(88, 86, 214, 0.1);
+  color: #5856d6;
+  font-family: var(--font-mono);
+}
+
+.dns-response-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  padding-left: 20px;
+  font-size: 11px;
+}
+
+.dns-rcode {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+.dns-rcode.ok {
+  background: rgba(52, 199, 89, 0.1);
+  color: var(--success);
+}
+
+.dns-rcode.error {
+  background: rgba(255, 59, 48, 0.1);
+  color: var(--error);
+}
+
+.dns-answer {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.dns-latency {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-left: auto;
+}
+
+.dns-latency.slow {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+/* TLS Inspector */
+.tls-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tls-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.tls-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.tls-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.tls-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: rgba(255, 149, 0, 0.05);
+  border-bottom: 1px solid var(--border-light);
+}
+
+.tls-frame {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+}
+
+.tls-version {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(255, 149, 0, 0.1);
+  color: #ff9500;
+  font-weight: 600;
+}
+
+.tls-detail {
+  padding: 10px 14px;
+}
+
+.tls-row {
+  display: flex;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.tls-label {
+  width: 100px;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.tls-value {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
+.tls-names {
+  color: var(--accent);
+}
+
+.tls-cipher {
+  font-size: 11px;
+}
+
+/* Payload Preview */
+.payload-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.payload-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.payload-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.payload-entry {
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+}
+
+.payload-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.http-method {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+}
+
+.method-get { background: rgba(52, 199, 89, 0.1); color: var(--success); }
+.method-post { background: rgba(0, 122, 255, 0.1); color: var(--accent); }
+.method-put { background: rgba(255, 149, 0, 0.1); color: var(--warning); }
+.method-delete { background: rgba(255, 59, 48, 0.1); color: var(--error); }
+.method-patch { background: rgba(175, 82, 222, 0.1); color: #af52de; }
+
+.http-status {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+}
+
+.status-ok { background: rgba(52, 199, 89, 0.1); color: var(--success); }
+.status-redirect { background: rgba(0, 122, 255, 0.1); color: var(--accent); }
+.status-client-err { background: rgba(255, 149, 0, 0.1); color: var(--warning); }
+.status-server-err { background: rgba(255, 59, 48, 0.1); color: var(--error); }
+
+.payload-url {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.payload-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.payload-ua {
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Bandwidth Graph */
+.bandwidth-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bw-header {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+
+.bw-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.bw-duration, .bw-peak {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+.bw-svg {
+  width: 100%;
+  max-height: 250px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+
+/* Conversation View */
+.conversation-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.conv-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.conv-parties {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.conv-client { color: var(--accent); font-weight: 600; }
+.conv-server { color: var(--success); font-weight: 600; }
+.conv-arrow { color: var(--text-tertiary); }
+
+.conv-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.conv-segment {
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.conv-segment.client {
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-secondary));
+}
+
+.conv-segment.server {
+  border-left: 3px solid var(--success);
+  background: color-mix(in srgb, var(--success) 5%, var(--bg-secondary));
+}
+
+.conv-seg-label {
+  padding: 4px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+}
+
+.conv-seg-data {
+  padding: 4px 10px 8px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-secondary);
+  margin: 0;
+  max-height: 300px;
+  overflow-y: auto;
+}

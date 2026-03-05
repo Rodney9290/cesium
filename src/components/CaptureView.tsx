@@ -8,6 +8,13 @@ import { EvidenceDrawer } from "./EvidenceDrawer";
 import { PacketTable } from "./PacketTable";
 import { SummaryDashboard } from "./SummaryDashboard";
 import { WaterfallChart } from "./WaterfallChart";
+import { GeoIpMap } from "./GeoIpMap";
+import { FlowReplay } from "./FlowReplay";
+import { DnsTimeline } from "./DnsTimeline";
+import { TlsInspector } from "./TlsInspector";
+import { PayloadPreview } from "./PayloadPreview";
+import { BandwidthGraph } from "./BandwidthGraph";
+import { ConversationView } from "./ConversationView";
 
 interface Props {
   capture: CaptureOverview;
@@ -16,7 +23,7 @@ interface Props {
   onToggleBookmark: (flowId: string, label: string) => void;
 }
 
-type ViewTab = "timeline" | "packets" | "compare" | "dashboard" | "waterfall";
+type ViewTab = "timeline" | "packets" | "compare" | "dashboard" | "waterfall" | "replay" | "geo" | "dns" | "tls" | "http" | "bandwidth" | "stream";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -124,6 +131,96 @@ function evaluateRule(rule: AlertRule, flow: Flow): boolean {
   return false;
 }
 
+// Wireshark-style display filter parser
+function evaluateDisplayFilter(filter: string, flow: Flow): boolean {
+  const expr = filter.trim().toLowerCase();
+  if (!expr) return true;
+
+  // Split on && and ||
+  if (expr.includes("||")) {
+    return expr.split("||").some((part) => evaluateDisplayFilter(part.trim(), flow));
+  }
+  if (expr.includes("&&")) {
+    return expr.split("&&").every((part) => evaluateDisplayFilter(part.trim(), flow));
+  }
+
+  // Handle negation
+  if (expr.startsWith("!") || expr.startsWith("not ")) {
+    const inner = expr.startsWith("!") ? expr.slice(1).trim() : expr.slice(4).trim();
+    return !evaluateDisplayFilter(inner, flow);
+  }
+
+  // Field == value comparisons
+  const eqMatch = expr.match(/^([\w.]+)\s*==\s*(.+)$/);
+  if (eqMatch) {
+    const [, field, value] = eqMatch;
+    const v = value.trim().replace(/^["']|["']$/g, "");
+    switch (field) {
+      case "ip.src": return flow.srcIp === v;
+      case "ip.dst": return flow.dstIp === v;
+      case "ip.addr": return flow.srcIp === v || flow.dstIp === v;
+      case "tcp.port": return flow.srcPort === Number(v) || flow.dstPort === Number(v);
+      case "tcp.srcport": return flow.srcPort === Number(v);
+      case "tcp.dstport": return flow.dstPort === Number(v);
+      case "udp.port": return flow.srcPort === Number(v) || flow.dstPort === Number(v);
+      case "frame.protocols":
+      case "protocol": return flow.protocol.toLowerCase() === v;
+    }
+  }
+
+  // Field != value
+  const neqMatch = expr.match(/^([\w.]+)\s*!=\s*(.+)$/);
+  if (neqMatch) {
+    const [, field, value] = neqMatch;
+    const v = value.trim().replace(/^["']|["']$/g, "");
+    switch (field) {
+      case "ip.src": return flow.srcIp !== v;
+      case "ip.dst": return flow.dstIp !== v;
+      case "ip.addr": return flow.srcIp !== v && flow.dstIp !== v;
+      case "protocol": return flow.protocol.toLowerCase() !== v;
+    }
+  }
+
+  // Field > value (numeric comparisons)
+  const gtMatch = expr.match(/^([\w.]+)\s*>\s*(\d+\.?\d*)$/);
+  if (gtMatch) {
+    const [, field, value] = gtMatch;
+    const n = Number(value);
+    switch (field) {
+      case "bytes": return flow.bytes > n;
+      case "packets": return flow.packetCount > n;
+      case "rtt": return flow.stats.rttMs != null && flow.stats.rttMs > n;
+      case "anomaly": return flow.anomalyScore > n;
+      case "duration": return (flow.endTime - flow.startTime) > n;
+    }
+  }
+
+  // Field < value
+  const ltMatch = expr.match(/^([\w.]+)\s*<\s*(\d+\.?\d*)$/);
+  if (ltMatch) {
+    const [, field, value] = ltMatch;
+    const n = Number(value);
+    switch (field) {
+      case "bytes": return flow.bytes < n;
+      case "packets": return flow.packetCount < n;
+      case "rtt": return flow.stats.rttMs != null && flow.stats.rttMs < n;
+      case "anomaly": return flow.anomalyScore < n;
+    }
+  }
+
+  // Protocol shorthand: just "tcp", "dns", "tls", etc.
+  if (/^[a-z]+$/.test(expr)) {
+    return flow.protocol.toLowerCase() === expr;
+  }
+
+  // Contains check for IP
+  if (/^\d+\.\d+/.test(expr)) {
+    return flow.srcIp.includes(expr) || flow.dstIp.includes(expr);
+  }
+
+  return true;
+}
+
 function parseNaturalQuery(
   query: string,
   flows: Flow[],
@@ -146,7 +243,7 @@ function parseNaturalQuery(
     { test: /tcp/, filter: (f) => f.protocol === "TCP" || f.protocol === "TLS" || f.protocol === "HTTP" },
     { test: /big|large|most data/, filter: (f) => f.bytes > 10000 },
     { test: /anomal|unusual|suspicious/, filter: (f) => f.anomalyScore > 30 },
-    { test: /bookmarked|saved/, filter: () => false }, // handled externally
+    { test: /bookmarked|saved/, filter: () => false },
     { test: /no issues|clean|healthy/, filter: (f) => f.findings.length === 0 },
     { test: /has issues|problematic/, filter: (f) => f.findings.length > 0 },
     { test: /duplicate.?ack|dup.?ack/, filter: (f) => f.events.some((e) => e.kind === "duplicate_ack") },
@@ -168,6 +265,74 @@ function parseNaturalQuery(
       f.srcPort.toString().includes(q) ||
       f.dstPort.toString().includes(q),
   );
+}
+
+function exportHtmlReport(capture: CaptureOverview) {
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Cesium Report - ${capture.filename}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 900px; margin: 40px auto; color: #1d1d1f; background: #fff; padding: 20px; }
+  h1 { font-size: 28px; margin-bottom: 8px; }
+  h2 { font-size: 20px; margin-top: 32px; border-bottom: 1px solid #e8e8ed; padding-bottom: 8px; }
+  .meta { color: #6e6e73; font-size: 14px; margin-bottom: 24px; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 20px 0; }
+  .stat { background: #f5f5f7; padding: 16px; border-radius: 10px; }
+  .stat-label { font-size: 11px; text-transform: uppercase; color: #86868b; }
+  .stat-value { font-size: 24px; font-weight: 700; font-family: monospace; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 16px 0; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #e8e8ed; }
+  th { font-weight: 600; color: #6e6e73; }
+  .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .error { background: rgba(255,59,48,0.1); color: #ff3b30; }
+  .warning { background: rgba(255,149,0,0.1); color: #ff9500; }
+  .info { background: rgba(0,122,255,0.1); color: #007aff; }
+  .footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #e8e8ed; font-size: 12px; color: #86868b; }
+</style>
+</head>
+<body>
+<h1>Cesium Analysis Report</h1>
+<div class="meta">${capture.filename} &mdash; Generated ${new Date().toLocaleString()}</div>
+
+<div class="stats">
+  <div class="stat"><div class="stat-label">Packets</div><div class="stat-value">${capture.totalPackets.toLocaleString()}</div></div>
+  <div class="stat"><div class="stat-label">Duration</div><div class="stat-value">${formatDuration(capture.duration)}</div></div>
+  <div class="stat"><div class="stat-label">Flows</div><div class="stat-value">${capture.flows.length}</div></div>
+  <div class="stat"><div class="stat-label">Total Traffic</div><div class="stat-value">${formatBytes(capture.flows.reduce((s, f) => s + f.bytes, 0))}</div></div>
+  <div class="stat"><div class="stat-label">Findings</div><div class="stat-value">${capture.findings.length}</div></div>
+  <div class="stat"><div class="stat-label">Avg Anomaly</div><div class="stat-value">${capture.flows.length > 0 ? (capture.flows.reduce((s, f) => s + f.anomalyScore, 0) / capture.flows.length).toFixed(1) : "0"}</div></div>
+</div>
+
+${capture.findings.length > 0 ? `
+<h2>Findings (${capture.findings.length})</h2>
+<table>
+<thead><tr><th>Severity</th><th>Title</th><th>Explanation</th><th>Confidence</th></tr></thead>
+<tbody>
+${capture.findings.map((f) => `<tr><td><span class="badge ${f.severity}">${f.severity}</span></td><td>${f.title}</td><td>${f.explanation}</td><td>${f.confidence}</td></tr>`).join("\n")}
+</tbody>
+</table>` : ""}
+
+<h2>Flows (${capture.flows.length})</h2>
+<table>
+<thead><tr><th>Source</th><th>Destination</th><th>Protocol</th><th>Packets</th><th>Bytes</th><th>RTT</th><th>Anomaly</th></tr></thead>
+<tbody>
+${capture.flows.map((f) => `<tr><td>${f.srcIp}:${f.srcPort}</td><td>${f.dstIp}:${f.dstPort}</td><td>${f.protocol}</td><td>${f.packetCount}</td><td>${formatBytes(f.bytes)}</td><td>${f.stats.rttMs != null ? f.stats.rttMs.toFixed(1) + "ms" : "-"}</td><td>${f.anomalyScore.toFixed(0)}</td></tr>`).join("\n")}
+</tbody>
+</table>
+
+<div class="footer">Generated by Cesium PCAP Analyzer</div>
+</body>
+</html>`;
+
+  const blob = new Blob([html], { type: "text/html" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${capture.filename}-report.html`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function exportFindings(capture: CaptureOverview, format: "markdown" | "json") {
@@ -203,7 +368,7 @@ function exportFindings(capture: CaptureOverview, format: "markdown" | "json") {
     if (capture.findings.length > 0) {
       lines.push(`## Findings\n`);
       for (const f of capture.findings) {
-        lines.push(`### ${f.severity === "error" ? "🔴" : f.severity === "warning" ? "🟡" : "🔵"} ${f.title}`);
+        lines.push(`### ${f.severity === "error" ? "ERROR" : f.severity === "warning" ? "WARNING" : "INFO"} ${f.title}`);
         lines.push(`${f.explanation}\n`);
         for (const e of f.evidence) {
           lines.push(`- **${e.label}:** ${e.value} (frames: ${e.frameNumbers.join(", ")})`);
@@ -256,6 +421,8 @@ export function CaptureView({ capture, onBack, bookmarks, onToggleBookmark }: Pr
   const [showRuleEditor, setShowRuleEditor] = useState(false);
   const [newRuleName, setNewRuleName] = useState("");
   const [newRuleCondition, setNewRuleCondition] = useState("");
+  const [displayFilter, setDisplayFilter] = useState("");
+  const [filterError, setFilterError] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const connectionListRef = useRef<HTMLDivElement>(null);
 
@@ -298,8 +465,21 @@ export function CaptureView({ capture, onBack, bookmarks, onToggleBookmark }: Pr
     });
   }, [capture.flows, globalSearch, hostnames]);
 
+  // Apply Wireshark-style display filter
+  const displayFiltered = useMemo(() => {
+    if (!displayFilter.trim()) return globalFiltered;
+    try {
+      const result = globalFiltered.filter((f) => evaluateDisplayFilter(displayFilter, f));
+      setFilterError(false);
+      return result;
+    } catch {
+      setFilterError(true);
+      return globalFiltered;
+    }
+  }, [globalFiltered, displayFilter]);
+
   const filteredFlows = useMemo(() => {
-    let flows = globalFiltered;
+    let flows = displayFiltered;
 
     if (timeRange) {
       flows = flows.filter((f) => f.startTime >= timeRange[0] && f.startTime <= timeRange[1]);
@@ -322,7 +502,7 @@ export function CaptureView({ capture, onBack, bookmarks, onToggleBookmark }: Pr
     }
 
     return parseNaturalQuery(searchQuery, flows, capture.findings);
-  }, [globalFiltered, capture.findings, searchQuery, activeFilter, timeRange, bookmarks, ruleViolations]);
+  }, [displayFiltered, capture.findings, searchQuery, activeFilter, timeRange, bookmarks, ruleViolations]);
 
   const grouped = useMemo(
     () => groupFlows(filteredFlows, groupMode, hostnames),
@@ -427,6 +607,11 @@ export function CaptureView({ capture, onBack, bookmarks, onToggleBookmark }: Pr
     setViewTab("compare");
   }, [selectedFlowId]);
 
+  // Global tabs (not per-flow)
+  const isGlobalTab = (tab: ViewTab) => ["dashboard", "waterfall", "geo", "dns", "tls", "http", "bandwidth"].includes(tab);
+  // Per-flow tabs
+  const flowTabs: ViewTab[] = ["timeline", "packets", "replay", "stream"];
+
   return (
     <div className="capture-layout">
       {/* Metadata Bar */}
@@ -450,22 +635,23 @@ export function CaptureView({ capture, onBack, bookmarks, onToggleBookmark }: Pr
           onChange={(e) => setGlobalSearch(e.target.value)}
         />
         <div className="metadata-actions">
-          <button
-            className={`btn-icon ${viewTab === "waterfall" ? "active" : ""}`}
-            onClick={() => setViewTab(viewTab === "waterfall" ? "timeline" : "waterfall")}
-            title="Waterfall"
-          >Waterfall</button>
-          <button
-            className={`btn-icon ${viewTab === "dashboard" ? "active" : ""}`}
-            onClick={() => setViewTab(viewTab === "dashboard" ? "timeline" : "dashboard")}
-            title="Dashboard"
-          >Dashboard</button>
+          {(["dashboard", "waterfall", "geo", "dns", "tls", "http", "bandwidth"] as ViewTab[]).map((t) => (
+            <button
+              key={t}
+              className={`btn-icon ${viewTab === t ? "active" : ""}`}
+              onClick={() => setViewTab(viewTab === t ? "timeline" : t)}
+              title={t.charAt(0).toUpperCase() + t.slice(1)}
+            >
+              {t === "geo" ? "Map" : t === "dns" ? "DNS" : t === "tls" ? "TLS" : t === "http" ? "HTTP" : t === "bandwidth" ? "BW" : t.charAt(0).toUpperCase() + t.slice(1)}
+            </button>
+          ))}
           <button
             className={`btn-icon ${showRuleEditor ? "active" : ""}`}
             onClick={() => setShowRuleEditor(!showRuleEditor)}
             title="Alert Rules"
           >Alerts</button>
-          <button className="btn-icon" title="Export as Markdown" onClick={() => exportFindings(capture, "markdown")}>Export</button>
+          <button className="btn-icon" title="Export as HTML" onClick={() => exportHtmlReport(capture)}>HTML</button>
+          <button className="btn-icon" title="Export as Markdown" onClick={() => exportFindings(capture, "markdown")}>MD</button>
           <button className="btn-icon" title="Export as JSON" onClick={() => exportFindings(capture, "json")}>{"{ }"}</button>
         </div>
       </div>
@@ -528,6 +714,14 @@ export function CaptureView({ capture, onBack, bookmarks, onToggleBookmark }: Pr
               </div>
             )}
           </div>
+          {/* Display filter bar */}
+          <input
+            className={`display-filter ${filterError ? "filter-error" : ""}`}
+            type="text"
+            placeholder="Display filter: ip.addr == 10.0.0.1 && tcp.port == 443"
+            value={displayFilter}
+            onChange={(e) => setDisplayFilter(e.target.value)}
+          />
         </div>
         <div className="quick-filters">
           {["slow", "errors", "dns", "retransmissions", "tls", "resets", "bookmarked", "anomalous", "alerts"].map(
@@ -597,15 +791,24 @@ export function CaptureView({ capture, onBack, bookmarks, onToggleBookmark }: Pr
       <div className="main-panel">
         <div className="main-panel-header">
           <h2>
-            {selectedFlow
-              ? <>
-                  <Copyable text={selectedFlow.srcIp}>{resolveIp(selectedFlow.srcIp, hostnames)}</Copyable>
-                  {" → "}
-                  <Copyable text={selectedFlow.dstIp}>{resolveIp(selectedFlow.dstIp, hostnames)}</Copyable>
-                </>
-              : "Select a connection"}
+            {isGlobalTab(viewTab)
+              ? viewTab === "dashboard" ? "Dashboard"
+                : viewTab === "waterfall" ? "Waterfall"
+                : viewTab === "geo" ? "Geographic Map"
+                : viewTab === "dns" ? "DNS Timeline"
+                : viewTab === "tls" ? "TLS Certificates"
+                : viewTab === "http" ? "HTTP Payloads"
+                : viewTab === "bandwidth" ? "Bandwidth"
+                : viewTab
+              : selectedFlow
+                ? <>
+                    <Copyable text={selectedFlow.srcIp}>{resolveIp(selectedFlow.srcIp, hostnames)}</Copyable>
+                    {" -> "}
+                    <Copyable text={selectedFlow.dstIp}>{resolveIp(selectedFlow.dstIp, hostnames)}</Copyable>
+                  </>
+                : "Select a connection"}
           </h2>
-          {selectedFlow && (
+          {selectedFlow && !isGlobalTab(viewTab) && (
             <div className="flow-stats">
               <span className="stat-chip">{formatBytes(selectedFlow.bytes)}</span>
               <span className="stat-chip">{formatBps(selectedFlow.stats.throughputBps)}</span>
@@ -618,11 +821,11 @@ export function CaptureView({ capture, onBack, bookmarks, onToggleBookmark }: Pr
               <Sparkline packets={selectedFlow.packets} />
             </div>
           )}
-          {selectedFlow && (
+          {selectedFlow && !isGlobalTab(viewTab) && (
             <div className="view-tabs">
-              {(["timeline", "packets", "waterfall", "dashboard"] as ViewTab[]).map((t) => (
+              {flowTabs.map((t) => (
                 <button key={t} className={`tab-btn ${viewTab === t ? "active" : ""}`} onClick={() => setViewTab(t)}>
-                  {t.charAt(0).toUpperCase() + t.slice(1)}
+                  {t === "stream" ? "Stream" : t.charAt(0).toUpperCase() + t.slice(1)}
                 </button>
               ))}
               {compareFlow && (
@@ -641,11 +844,25 @@ export function CaptureView({ capture, onBack, bookmarks, onToggleBookmark }: Pr
               selectedFlowId={selectedFlowId}
               onSelectFlow={setSelectedFlowId}
             />
+          ) : viewTab === "geo" ? (
+            <GeoIpMap flows={filteredFlows} onSelectFlow={setSelectedFlowId} />
+          ) : viewTab === "dns" ? (
+            <DnsTimeline />
+          ) : viewTab === "tls" ? (
+            <TlsInspector />
+          ) : viewTab === "http" ? (
+            <PayloadPreview />
+          ) : viewTab === "bandwidth" ? (
+            <BandwidthGraph flows={filteredFlows} />
           ) : selectedFlow ? (
             viewTab === "timeline" ? (
               <Timeline events={selectedFlow.events} />
             ) : viewTab === "packets" ? (
               <PacketTable packets={selectedFlow.packets} />
+            ) : viewTab === "replay" ? (
+              <FlowReplay packets={selectedFlow.packets} srcIp={selectedFlow.srcIp} />
+            ) : viewTab === "stream" ? (
+              <ConversationView flow={selectedFlow} />
             ) : viewTab === "compare" && compareFlow ? (
               <div className="compare-view">
                 <div className="compare-col">
