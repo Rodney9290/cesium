@@ -4,7 +4,7 @@ mod model;
 mod sessionizer;
 mod timeline;
 
-use model::{CaptureOverview, Flow};
+use model::{CaptureOverview, Flow, FlowStats, PacketSummary};
 use std::path::Path;
 
 const MAX_FILE_SIZE: u64 = 500 * 1024 * 1024; // 500 MB
@@ -112,6 +112,52 @@ fn open_pcap(path: String) -> Result<CaptureOverview, String> {
         let findings = diagnostics::analyze(&flow_id, &events);
         all_findings.extend(findings.clone());
 
+        // Compute stats
+        let flow_duration = end_time - start_time;
+        let throughput_bps = if flow_duration > 0.0 {
+            (bytes as f64 * 8.0) / flow_duration
+        } else {
+            0.0
+        };
+        let avg_packet_size = if !flow_packets.is_empty() {
+            bytes as f64 / flow_packets.len() as f64
+        } else {
+            0.0
+        };
+        let rtt_ms = events.iter().find_map(|e| {
+            if e.kind == "tcp_syn_ack" {
+                e.duration
+            } else {
+                None
+            }
+        });
+
+        // Build packet summaries for detail panel
+        let packet_summaries: Vec<PacketSummary> = flow_packets
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let delta = if i > 0 {
+                    p.timestamp - flow_packets[i - 1].timestamp
+                } else {
+                    0.0
+                };
+                PacketSummary {
+                    frame_number: p.frame_number,
+                    timestamp: p.timestamp,
+                    relative_time: p.timestamp - start_time,
+                    delta_time: delta,
+                    src_ip: p.src_ip.clone(),
+                    dst_ip: p.dst_ip.clone(),
+                    src_port: p.src_port,
+                    dst_port: p.dst_port,
+                    protocol: p.protocol.clone(),
+                    length: p.length,
+                    info: p.info.clone(),
+                }
+            })
+            .collect();
+
         flows.push(Flow {
             id: flow_id,
             src_ip: key.ip_a.clone(),
@@ -125,6 +171,12 @@ fn open_pcap(path: String) -> Result<CaptureOverview, String> {
             end_time,
             events,
             findings,
+            stats: FlowStats {
+                throughput_bps,
+                avg_packet_size,
+                rtt_ms,
+            },
+            packets: packet_summaries,
         });
     }
 

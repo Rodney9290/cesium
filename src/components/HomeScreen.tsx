@@ -1,6 +1,7 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { CaptureOverview } from "../types";
 
 interface Props {
@@ -28,6 +29,33 @@ export function HomeScreen({ onFileLoaded }: Props) {
     [onFileLoaded],
   );
 
+  // Listen for Tauri file drop events
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    getCurrentWebviewWindow()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "over") {
+          setDragActive(true);
+        } else if (event.payload.type === "drop") {
+          setDragActive(false);
+          const paths = event.payload.paths;
+          if (paths.length > 0) {
+            loadFile(paths[0]);
+          }
+        } else {
+          setDragActive(false);
+        }
+      })
+      .then((fn) => {
+        unlisten = fn;
+      });
+
+    return () => {
+      unlisten?.();
+    };
+  }, [loadFile]);
+
   const handleClick = async () => {
     const selected = await open({
       multiple: false,
@@ -54,20 +82,6 @@ export function HomeScreen({ onFileLoaded }: Props) {
       <div
         className={`drop-zone ${dragActive ? "active" : ""}`}
         onClick={handleClick}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragActive(true);
-        }}
-        onDragLeave={() => setDragActive(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragActive(false);
-          const file = e.dataTransfer.files[0];
-          if (file) {
-            // In Tauri, drag-and-drop file paths come from the event
-            // This is a placeholder — Tauri handles file drops via its own API
-          }
-        }}
       >
         {loading ? (
           <span className="drop-zone-label">Analyzing capture...</span>

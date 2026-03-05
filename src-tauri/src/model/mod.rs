@@ -15,6 +15,39 @@ pub struct Packet {
     pub layers: serde_json::Value,
 }
 
+/// Compact packet summary sent to the frontend for the detail panel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PacketSummary {
+    #[serde(rename = "frameNumber")]
+    pub frame_number: u64,
+    pub timestamp: f64,
+    #[serde(rename = "relativeTime")]
+    pub relative_time: f64,
+    #[serde(rename = "deltaTime")]
+    pub delta_time: f64,
+    #[serde(rename = "srcIp")]
+    pub src_ip: String,
+    #[serde(rename = "dstIp")]
+    pub dst_ip: String,
+    #[serde(rename = "srcPort")]
+    pub src_port: Option<u16>,
+    #[serde(rename = "dstPort")]
+    pub dst_port: Option<u16>,
+    pub protocol: String,
+    pub length: u64,
+    pub info: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowStats {
+    #[serde(rename = "throughputBps")]
+    pub throughput_bps: f64,
+    #[serde(rename = "avgPacketSize")]
+    pub avg_packet_size: f64,
+    #[serde(rename = "rttMs")]
+    pub rtt_ms: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Flow {
     pub id: String,
@@ -36,6 +69,8 @@ pub struct Flow {
     pub end_time: f64,
     pub events: Vec<TimelineEvent>,
     pub findings: Vec<Finding>,
+    pub stats: FlowStats,
+    pub packets: Vec<PacketSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

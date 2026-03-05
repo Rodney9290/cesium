@@ -1,3 +1,23 @@
+export interface PacketSummary {
+  frameNumber: number;
+  timestamp: number;
+  relativeTime: number;
+  deltaTime: number;
+  srcIp: string;
+  dstIp: string;
+  srcPort: number | null;
+  dstPort: number | null;
+  protocol: string;
+  length: number;
+  info: string;
+}
+
+export interface FlowStats {
+  throughputBps: number;
+  avgPacketSize: number;
+  rttMs: number | null;
+}
+
 export interface Flow {
   id: string;
   srcIp: string;
@@ -11,6 +31,8 @@ export interface Flow {
   endTime: number;
   events: TimelineEvent[];
   findings: Finding[];
+  stats: FlowStats;
+  packets: PacketSummary[];
 }
 
 export type EventKind =
@@ -26,6 +48,9 @@ export type EventKind =
   | "http_request"
   | "http_response"
   | "retransmission"
+  | "duplicate_ack"
+  | "out_of_order"
+  | "zero_window"
   | "reset"
   | "fin"
   | "unknown";

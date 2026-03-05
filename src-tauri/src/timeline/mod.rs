@@ -172,13 +172,14 @@ pub fn build_timeline(packets: &[&Packet]) -> Vec<TimelineEvent> {
                 });
             }
 
-            // Retransmission (TShark marks this in tcp.analysis)
-            let is_retrans = tcp
-                .get("tcp_tcp_analysis")
+            // TCP analysis flags from TShark
+            let analysis = tcp.get("tcp_tcp_analysis");
+
+            // Retransmission
+            let is_retrans = analysis
                 .and_then(|a| a.get("tcp_tcp_analysis_retransmission"))
                 .is_some()
-                || tcp
-                    .get("tcp_tcp_analysis")
+                || analysis
                     .and_then(|a| a.get("tcp_tcp_analysis_fast_retransmission"))
                     .is_some();
 
@@ -196,6 +197,58 @@ pub fn build_timeline(packets: &[&Packet]) -> Vec<TimelineEvent> {
                     details: HashMap::from([("seq".into(), seq.to_string())]),
                 });
             }
+
+            // Duplicate ACK
+            let is_dup_ack = analysis
+                .and_then(|a| a.get("tcp_tcp_analysis_duplicate_ack"))
+                .is_some()
+                || analysis
+                    .and_then(|a| a.get("tcp_tcp_analysis_duplicate_ack_num"))
+                    .is_some();
+
+            if is_dup_ack {
+                events.push(TimelineEvent {
+                    kind: "duplicate_ack".into(),
+                    label: "Duplicate ACK".into(),
+                    timestamp: pkt.timestamp,
+                    duration: None,
+                    frame_numbers: vec![pkt.frame_number],
+                    details: HashMap::new(),
+                });
+            }
+
+            // Out-of-order
+            let is_ooo = analysis
+                .and_then(|a| a.get("tcp_tcp_analysis_out_of_order"))
+                .is_some();
+
+            if is_ooo {
+                events.push(TimelineEvent {
+                    kind: "out_of_order".into(),
+                    label: "Out-of-Order Segment".into(),
+                    timestamp: pkt.timestamp,
+                    duration: None,
+                    frame_numbers: vec![pkt.frame_number],
+                    details: HashMap::new(),
+                });
+            }
+
+            // Zero window
+            let window_size = tcp
+                .get("tcp_tcp_window_size_value")
+                .and_then(ek_str)
+                .and_then(|s| s.parse::<u64>().ok());
+
+            if window_size == Some(0) && !syn && !rst && !fin {
+                events.push(TimelineEvent {
+                    kind: "zero_window".into(),
+                    label: "Zero Window".into(),
+                    timestamp: pkt.timestamp,
+                    duration: None,
+                    frame_numbers: vec![pkt.frame_number],
+                    details: HashMap::new(),
+                });
+            }
         }
 
         // --- TLS events ---
@@ -210,25 +263,63 @@ pub fn build_timeline(packets: &[&Packet]) -> Vec<TimelineEvent> {
                 .and_then(ek_str)
                 .unwrap_or("");
 
+            let tls_version = tls
+                .get("tls_tls_handshake_version")
+                .and_then(ek_str)
+                .or_else(|| tls.get("tls_tls_record_version").and_then(ek_str))
+                .unwrap_or("")
+                .to_string();
+
+            let tls_version_name = match tls_version.as_str() {
+                "768" => "SSL 3.0",
+                "769" => "TLS 1.0",
+                "770" => "TLS 1.1",
+                "771" => "TLS 1.2",
+                "772" => "TLS 1.3",
+                _ => "",
+            };
+
             match handshake_type {
                 "1" => {
+                    let mut details = HashMap::new();
+                    if !tls_version.is_empty() {
+                        details.insert("tls_version".into(), tls_version.clone());
+                    }
+                    if !tls_version_name.is_empty() {
+                        details.insert("tls_version_name".into(), tls_version_name.into());
+                    }
                     events.push(TimelineEvent {
                         kind: "tls_client_hello".into(),
-                        label: "TLS ClientHello".into(),
+                        label: if tls_version_name.is_empty() {
+                            "TLS ClientHello".into()
+                        } else {
+                            format!("TLS ClientHello ({})", tls_version_name)
+                        },
                         timestamp: pkt.timestamp,
                         duration: None,
                         frame_numbers: vec![pkt.frame_number],
-                        details: HashMap::new(),
+                        details,
                     });
                 }
                 "2" => {
+                    let mut details = HashMap::new();
+                    if !tls_version.is_empty() {
+                        details.insert("tls_version".into(), tls_version.clone());
+                    }
+                    if !tls_version_name.is_empty() {
+                        details.insert("tls_version_name".into(), tls_version_name.into());
+                    }
                     events.push(TimelineEvent {
                         kind: "tls_server_hello".into(),
-                        label: "TLS ServerHello".into(),
+                        label: if tls_version_name.is_empty() {
+                            "TLS ServerHello".into()
+                        } else {
+                            format!("TLS ServerHello ({})", tls_version_name)
+                        },
                         timestamp: pkt.timestamp,
                         duration: None,
                         frame_numbers: vec![pkt.frame_number],
-                        details: HashMap::new(),
+                        details,
                     });
                 }
                 _ => {
