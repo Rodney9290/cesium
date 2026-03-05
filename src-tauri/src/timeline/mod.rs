@@ -1,6 +1,28 @@
 use crate::model::{Packet, TimelineEvent};
 use std::collections::HashMap;
 
+/// Extract a string from a JSON value that may be a plain string or an array of strings.
+fn ek_str<'a>(value: &'a serde_json::Value) -> Option<&'a str> {
+    value
+        .as_str()
+        .or_else(|| value.as_array().and_then(|a| a.first()).and_then(|v| v.as_str()))
+}
+
+/// Extract a string field from a JSON object.
+fn ek_field_str<'a>(obj: &'a serde_json::Map<String, serde_json::Value>, key: &str) -> Option<&'a str> {
+    obj.get(key).and_then(ek_str)
+}
+
+/// Check if a flag is set — handles bool (TShark 4.x) or string "1" (TShark 3.x).
+fn ek_flag(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Bool(b) => *b,
+        serde_json::Value::String(s) => s == "1" || s == "true",
+        serde_json::Value::Array(a) => a.first().map(ek_flag).unwrap_or(false),
+        _ => false,
+    }
+}
+
 /// Build timeline events from an ordered list of packets in a single flow.
 pub fn build_timeline(packets: &[&Packet]) -> Vec<TimelineEvent> {
     let mut events = Vec::new();
@@ -19,24 +41,18 @@ pub fn build_timeline(packets: &[&Packet]) -> Vec<TimelineEvent> {
         if let Some(dns) = layers.get("dns") {
             let is_response = dns
                 .get("dns_dns_flags_response")
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
-                == Some("1");
+                .map(ek_flag)
+                .unwrap_or(false);
 
             let txid = dns
                 .get("dns_dns_id")
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
+                .and_then(ek_str)
                 .unwrap_or("")
                 .to_string();
 
             let query_name = dns
                 .get("dns_dns_qry_name")
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
+                .and_then(ek_str)
                 .unwrap_or("unknown");
 
             if !is_response {
@@ -67,34 +83,16 @@ pub fn build_timeline(packets: &[&Packet]) -> Vec<TimelineEvent> {
 
         // --- TCP events ---
         if let Some(tcp) = layers.get("tcp") {
-            let flags = tcp
+            // TShark 4.x puts flags directly on the tcp object
+            // TShark 3.x may use tcp_tcp_flags_tree sub-object
+            let flags_obj = tcp
                 .get("tcp_tcp_flags_tree")
-                .and_then(|t| t.as_object());
+                .unwrap_or(tcp);
 
-            let syn = flags
-                .and_then(|f| f.get("tcp_tcp_flags_syn"))
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
-                == Some("1");
-            let ack = flags
-                .and_then(|f| f.get("tcp_tcp_flags_ack"))
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
-                == Some("1");
-            let rst = flags
-                .and_then(|f| f.get("tcp_tcp_flags_reset"))
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
-                == Some("1");
-            let fin = flags
-                .and_then(|f| f.get("tcp_tcp_flags_fin"))
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
-                == Some("1");
+            let syn = flags_obj.get("tcp_tcp_flags_syn").map(ek_flag).unwrap_or(false);
+            let ack = flags_obj.get("tcp_tcp_flags_ack").map(ek_flag).unwrap_or(false);
+            let rst = flags_obj.get("tcp_tcp_flags_reset").map(ek_flag).unwrap_or(false);
+            let fin = flags_obj.get("tcp_tcp_flags_fin").map(ek_flag).unwrap_or(false);
 
             // SYN (no ACK) = connection initiation
             if syn && !ack {
@@ -187,9 +185,7 @@ pub fn build_timeline(packets: &[&Packet]) -> Vec<TimelineEvent> {
             if is_retrans {
                 let seq = tcp
                     .get("tcp_tcp_seq")
-                    .and_then(|v| v.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|v| v.as_str())
+                    .and_then(ek_str)
                     .unwrap_or("?");
                 events.push(TimelineEvent {
                     kind: "retransmission".into(),
@@ -206,16 +202,12 @@ pub fn build_timeline(packets: &[&Packet]) -> Vec<TimelineEvent> {
         if let Some(tls) = layers.get("tls") {
             let content_type = tls
                 .get("tls_tls_record_content_type")
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
+                .and_then(ek_str)
                 .unwrap_or("");
 
             let handshake_type = tls
                 .get("tls_tls_handshake_type")
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
+                .and_then(ek_str)
                 .unwrap_or("");
 
             match handshake_type {
@@ -255,22 +247,10 @@ pub fn build_timeline(packets: &[&Packet]) -> Vec<TimelineEvent> {
         }
 
         // --- HTTP events ---
-        if let Some(http) = layers.get("http") {
-            let method = http
-                .get("http_http_request_method")
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str());
-            let uri = http
-                .get("http_http_request_uri")
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str());
-            let status = http
-                .get("http_http_response_code")
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str());
+        if let Some(http) = layers.get("http").and_then(|h| h.as_object()) {
+            let method = ek_field_str(http, "http_http_request_method");
+            let uri = ek_field_str(http, "http_http_request_uri");
+            let status = ek_field_str(http, "http_http_response_code");
 
             if let (Some(method), Some(uri)) = (method, uri) {
                 events.push(TimelineEvent {

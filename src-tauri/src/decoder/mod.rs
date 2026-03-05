@@ -22,26 +22,77 @@ pub enum DecoderError {
     Io(#[from] std::io::Error),
 }
 
-/// Check that tshark is available and return its version string.
-pub fn check_tshark() -> Result<String, DecoderError> {
-    let output = Command::new("tshark")
-        .arg("--version")
-        .output()
-        .map_err(|_| DecoderError::TsharkNotFound)?;
-
-    if !output.status.success() {
-        return Err(DecoderError::TsharkNotFound);
-    }
-
-    let version = String::from_utf8_lossy(&output.stdout);
-    let first_line = version.lines().next().unwrap_or("unknown");
-    Ok(first_line.to_string())
+/// Extract a string from a JSON value that may be either a plain string or an array of strings.
+/// TShark 3.x uses arrays, TShark 4.x uses plain values.
+fn ek_str<'a>(value: &'a serde_json::Value) -> Option<&'a str> {
+    value
+        .as_str()
+        .or_else(|| value.as_array().and_then(|a| a.first()).and_then(|v| v.as_str()))
 }
 
-/// Decode a PCAP file into a Vec<Packet> using tshark JSON output.
-///
-/// Uses `--no-duplicate-keys` to avoid JSON parsing issues with
-/// duplicate field names in some protocol dissections.
+/// Extract a string field from a JSON object, handling both array and plain formats.
+fn ek_field_str<'a>(obj: &'a serde_json::Map<String, serde_json::Value>, key: &str) -> Option<&'a str> {
+    obj.get(key).and_then(ek_str)
+}
+
+/// Parse a timestamp that may be either a Unix epoch float or an ISO 8601 string.
+fn parse_timestamp(s: &str) -> Option<f64> {
+    // Try as float first (TShark 3.x)
+    if let Ok(ts) = s.parse::<f64>() {
+        // Sanity check: valid epoch timestamps are > 1e9 (year 2001+)
+        if ts > 1e9 {
+            return Some(ts);
+        }
+    }
+    // Try as ISO 8601 (TShark 4.x): "2026-03-05T15:31:57.327271000Z"
+    if s.contains('T') && s.contains('-') {
+        // Parse manually: extract seconds since epoch
+        // Format: YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ
+        let ts_str = s.trim_end_matches('Z');
+        let (date_time, nanos_str) = ts_str.split_once('.').unwrap_or((ts_str, "0"));
+        let nanos: f64 = format!("0.{}", nanos_str).parse().unwrap_or(0.0);
+
+        // Use a simple approach: parse with chrono-like manual calculation
+        let parts: Vec<&str> = date_time.split('T').collect();
+        if parts.len() == 2 {
+            let date_parts: Vec<u32> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
+            let time_parts: Vec<&str> = parts[1].split(':').collect();
+            if date_parts.len() == 3 && time_parts.len() == 3 {
+                let year = date_parts[0] as i64;
+                let month = date_parts[1];
+                let day = date_parts[2];
+                let hour: u32 = time_parts[0].parse().unwrap_or(0);
+                let minute: u32 = time_parts[1].parse().unwrap_or(0);
+                let second: u32 = time_parts[2].parse().unwrap_or(0);
+
+                // Days from epoch (1970-01-01) using a simplified calculation
+                let mut days: i64 = 0;
+                for y in 1970..year {
+                    days += if is_leap(y) { 366 } else { 365 };
+                }
+                let month_days = [0, 31, 28 + if is_leap(year) { 1 } else { 0 },
+                    31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+                for m in 1..month {
+                    days += month_days[m as usize] as i64;
+                }
+                days += (day as i64) - 1;
+
+                let epoch = days * 86400
+                    + (hour as i64) * 3600
+                    + (minute as i64) * 60
+                    + (second as i64);
+                return Some(epoch as f64 + nanos);
+            }
+        }
+    }
+    None
+}
+
+fn is_leap(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+/// Decode a PCAP file into a Vec<Packet> using tshark EK (newline-delimited JSON) output.
 pub fn decode_pcap(path: &Path) -> Result<Vec<Packet>, DecoderError> {
     let child = Command::new("tshark")
         .args([
@@ -49,7 +100,6 @@ pub fn decode_pcap(path: &Path) -> Result<Vec<Packet>, DecoderError> {
             path.to_str().unwrap_or(""),
             "-T",
             "ek",
-            "--no-duplicate-keys",
         ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -102,34 +152,22 @@ pub fn decode_pcap(path: &Path) -> Result<Vec<Packet>, DecoderError> {
         let frame = layers.get("frame").and_then(|f| f.as_object());
 
         let frame_number = frame
-            .and_then(|f| f.get("frame_frame_number"))
-            .and_then(|v| v.as_array())
-            .and_then(|a| a.first())
-            .and_then(|v| v.as_str())
+            .and_then(|f| ek_field_str(f, "frame_frame_number"))
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
 
         let timestamp = frame
-            .and_then(|f| f.get("frame_frame_time_epoch"))
-            .and_then(|v| v.as_array())
-            .and_then(|a| a.first())
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
+            .and_then(|f| ek_field_str(f, "frame_frame_time_epoch"))
+            .and_then(parse_timestamp)
             .unwrap_or(0.0);
 
         let length = frame
-            .and_then(|f| f.get("frame_frame_len"))
-            .and_then(|v| v.as_array())
-            .and_then(|a| a.first())
-            .and_then(|v| v.as_str())
+            .and_then(|f| ek_field_str(f, "frame_frame_len"))
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
 
         let protocol = frame
-            .and_then(|f| f.get("frame_frame_protocols"))
-            .and_then(|v| v.as_array())
-            .and_then(|a| a.first())
-            .and_then(|v| v.as_str())
+            .and_then(|f| ek_field_str(f, "frame_frame_protocols"))
             .map(|s| {
                 // Take the highest-level protocol from the colon-separated list
                 s.split(':').last().unwrap_or(s).to_uppercase()
@@ -138,17 +176,11 @@ pub fn decode_pcap(path: &Path) -> Result<Vec<Packet>, DecoderError> {
 
         let ip = layers.get("ip").and_then(|i| i.as_object());
         let src_ip = ip
-            .and_then(|i| i.get("ip_ip_src"))
-            .and_then(|v| v.as_array())
-            .and_then(|a| a.first())
-            .and_then(|v| v.as_str())
+            .and_then(|i| ek_field_str(i, "ip_ip_src"))
             .unwrap_or("0.0.0.0")
             .to_string();
         let dst_ip = ip
-            .and_then(|i| i.get("ip_ip_dst"))
-            .and_then(|v| v.as_array())
-            .and_then(|a| a.first())
-            .and_then(|v| v.as_str())
+            .and_then(|i| ek_field_str(i, "ip_ip_dst"))
             .unwrap_or("0.0.0.0")
             .to_string();
 
@@ -157,28 +189,16 @@ pub fn decode_pcap(path: &Path) -> Result<Vec<Packet>, DecoderError> {
 
         let (src_port, dst_port) = if let Some(tcp) = tcp {
             (
-                tcp.get("tcp_tcp_srcport")
-                    .and_then(|v| v.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|v| v.as_str())
+                ek_field_str(tcp, "tcp_tcp_srcport")
                     .and_then(|s| s.parse::<u16>().ok()),
-                tcp.get("tcp_tcp_dstport")
-                    .and_then(|v| v.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|v| v.as_str())
+                ek_field_str(tcp, "tcp_tcp_dstport")
                     .and_then(|s| s.parse::<u16>().ok()),
             )
         } else if let Some(udp) = udp {
             (
-                udp.get("udp_udp_srcport")
-                    .and_then(|v| v.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|v| v.as_str())
+                ek_field_str(udp, "udp_udp_srcport")
                     .and_then(|s| s.parse::<u16>().ok()),
-                udp.get("udp_udp_dstport")
-                    .and_then(|v| v.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|v| v.as_str())
+                ek_field_str(udp, "udp_udp_dstport")
                     .and_then(|s| s.parse::<u16>().ok()),
             )
         } else {
