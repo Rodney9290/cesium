@@ -90,4 +90,5 @@ export interface CaptureOverview {
   duration: number;
   flows: Flow[];
   findings: Finding[];
+  hostnames: Record<string, string>;
 }

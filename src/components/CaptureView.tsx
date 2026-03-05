@@ -1,16 +1,17 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import type { CaptureOverview, Flow, Finding } from "../types";
 import { Timeline } from "./Timeline";
 import { FindingsPanel } from "./FindingsPanel";
 import { EvidenceDrawer } from "./EvidenceDrawer";
 import { PacketTable } from "./PacketTable";
+import { SummaryDashboard } from "./SummaryDashboard";
 
 interface Props {
   capture: CaptureOverview;
   onBack: () => void;
 }
 
-type ViewTab = "timeline" | "packets";
+type ViewTab = "timeline" | "packets" | "compare" | "dashboard";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -30,16 +31,41 @@ function formatDuration(seconds: number): string {
   return `${(seconds / 60).toFixed(1)}m`;
 }
 
-// Natural-language filter parser
+function copyToClipboard(text: string) {
+  navigator.clipboard.writeText(text);
+}
+
+function Copyable({ text, children }: { text: string; children?: React.ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <span
+      className="copyable"
+      title="Click to copy"
+      onClick={(e) => {
+        e.stopPropagation();
+        copyToClipboard(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      }}
+    >
+      {children ?? text}
+      {copied && <span className="copied-badge">Copied</span>}
+    </span>
+  );
+}
+
+function resolveIp(ip: string, hostnames: Record<string, string>): string {
+  return hostnames[ip] || ip;
+}
+
 function parseNaturalQuery(
   query: string,
   flows: Flow[],
-  allFindings: Finding[],
+  _allFindings: Finding[],
 ): Flow[] {
   const q = query.toLowerCase().trim();
   if (!q) return flows;
 
-  // Check for natural-language patterns
   const patterns: { test: RegExp; filter: (f: Flow) => boolean }[] = [
     { test: /slow|latency|delay/, filter: (f) => f.findings.some((fi) => fi.title.toLowerCase().includes("slow") || fi.title.toLowerCase().includes("latency")) },
     { test: /error|problem|issue|fail/, filter: (f) => f.findings.some((fi) => fi.severity === "error") },
@@ -67,7 +93,6 @@ function parseNaturalQuery(
     }
   }
 
-  // Fallback: IP/protocol text search
   return flows.filter(
     (f) =>
       f.dstIp.includes(q) ||
@@ -142,24 +167,75 @@ function exportFindings(capture: CaptureOverview, format: "markdown" | "json") {
   URL.revokeObjectURL(url);
 }
 
+type GroupMode = "none" | "destination" | "protocol";
+
+function groupFlows(flows: Flow[], mode: GroupMode, hostnames: Record<string, string>): Map<string, Flow[]> {
+  if (mode === "none") return new Map([["", flows]]);
+  const map = new Map<string, Flow[]>();
+  for (const f of flows) {
+    const key = mode === "destination"
+      ? (hostnames[f.dstIp] || f.dstIp)
+      : f.protocol;
+    const arr = map.get(key) || [];
+    arr.push(f);
+    map.set(key, arr);
+  }
+  return map;
+}
+
 export function CaptureView({ capture, onBack }: Props) {
   const [selectedFlowId, setSelectedFlowId] = useState<string | null>(
     capture.flows[0]?.id ?? null,
   );
+  const [compareFlowId, setCompareFlowId] = useState<string | null>(null);
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [globalSearch, setGlobalSearch] = useState("");
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
   const [viewTab, setViewTab] = useState<ViewTab>("timeline");
+  const [groupMode, setGroupMode] = useState<GroupMode>("none");
+  const [timeRange, setTimeRange] = useState<[number, number] | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const connectionListRef = useRef<HTMLDivElement>(null);
+
+  const hostnames = capture.hostnames || {};
 
   const selectedFlow = capture.flows.find((f) => f.id === selectedFlowId);
+  const compareFlow = capture.flows.find((f) => f.id === compareFlowId);
   const flowFindings = capture.findings.filter(
     (f) => f.flowId === selectedFlowId,
   );
 
-  const filteredFlows = useMemo(() => {
-    let flows = capture.flows;
+  // Global search across all flows
+  const globalFiltered = useMemo(() => {
+    if (!globalSearch.trim()) return capture.flows;
+    const q = globalSearch.toLowerCase();
+    return capture.flows.filter((f) => {
+      const hostSrc = hostnames[f.srcIp] || "";
+      const hostDst = hostnames[f.dstIp] || "";
+      return (
+        f.srcIp.includes(q) ||
+        f.dstIp.includes(q) ||
+        hostSrc.toLowerCase().includes(q) ||
+        hostDst.toLowerCase().includes(q) ||
+        f.protocol.toLowerCase().includes(q) ||
+        f.findings.some((fi) => fi.title.toLowerCase().includes(q) || fi.explanation.toLowerCase().includes(q)) ||
+        f.events.some((e) => e.label.toLowerCase().includes(q))
+      );
+    });
+  }, [capture.flows, globalSearch, hostnames]);
 
-    // Apply pill filter first
+  const filteredFlows = useMemo(() => {
+    let flows = globalFiltered;
+
+    // Time range filter
+    if (timeRange) {
+      flows = flows.filter(
+        (f) => f.startTime >= timeRange[0] && f.startTime <= timeRange[1],
+      );
+    }
+
+    // Pill filter
     if (activeFilter) {
       const filterMap: Record<string, (f: Flow) => boolean> = {
         slow: (f) => f.findings.some((fi) => fi.title.toLowerCase().includes("slow") || fi.title.toLowerCase().includes("latency")),
@@ -173,15 +249,73 @@ export function CaptureView({ capture, onBack }: Props) {
       if (fn) flows = flows.filter(fn);
     }
 
-    // Then apply search/natural-language filter
     return parseNaturalQuery(searchQuery, flows, capture.findings);
-  }, [capture.flows, capture.findings, searchQuery, activeFilter]);
+  }, [globalFiltered, capture.findings, searchQuery, activeFilter, timeRange]);
+
+  const grouped = useMemo(
+    () => groupFlows(filteredFlows, groupMode, hostnames),
+    [filteredFlows, groupMode, hostnames],
+  );
 
   const toggleFilter = (name: string) => {
     setActiveFilter((prev) => (prev === name ? null : name));
   };
 
   const totalBytes = capture.flows.reduce((sum, f) => sum + f.bytes, 0);
+
+  // Keyboard navigation
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
+        e.preventDefault();
+        searchRef.current?.focus();
+        return;
+      }
+      if (e.key === "Escape") {
+        (document.activeElement as HTMLElement)?.blur();
+        setSelectedFinding(null);
+        if (compareFlowId) setCompareFlowId(null);
+        return;
+      }
+      if (document.activeElement?.tagName === "INPUT") return;
+
+      if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "j" || e.key === "k") {
+        e.preventDefault();
+        const idx = filteredFlows.findIndex((f) => f.id === selectedFlowId);
+        const next = (e.key === "ArrowDown" || e.key === "k") ? idx + 1 : idx - 1;
+        if (next >= 0 && next < filteredFlows.length) {
+          setSelectedFlowId(filteredFlows[next].id);
+          // Scroll into view
+          const el = connectionListRef.current?.querySelector(`[data-flow-id="${filteredFlows[next].id}"]`);
+          el?.scrollIntoView({ block: "nearest" });
+        }
+        return;
+      }
+      if (e.key === "d") {
+        setViewTab("dashboard");
+      } else if (e.key === "t") {
+        setViewTab("timeline");
+      } else if (e.key === "p") {
+        setViewTab("packets");
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [filteredFlows, selectedFlowId, compareFlowId]);
+
+  // Time range: compute min/max from capture
+  const captureStart = capture.flows.length > 0
+    ? Math.min(...capture.flows.map((f) => f.startTime))
+    : 0;
+  const captureEnd = capture.flows.length > 0
+    ? Math.max(...capture.flows.map((f) => f.endTime))
+    : 0;
+
+  const handleCompareSelect = useCallback((flowId: string) => {
+    if (flowId === selectedFlowId) return;
+    setCompareFlowId(flowId);
+    setViewTab("compare");
+  }, [selectedFlowId]);
 
   return (
     <div className="capture-layout">
@@ -208,13 +342,27 @@ export function CaptureView({ capture, onBack }: Props) {
             {capture.findings.length} finding{capture.findings.length !== 1 ? "s" : ""}
           </span>
         </div>
+        <input
+          className="global-search"
+          type="text"
+          placeholder="Search everything... (hosts, IPs, findings)"
+          value={globalSearch}
+          onChange={(e) => setGlobalSearch(e.target.value)}
+        />
         <div className="metadata-actions">
+          <button
+            className={`btn-icon ${viewTab === "dashboard" ? "active" : ""}`}
+            onClick={() => setViewTab(viewTab === "dashboard" ? "timeline" : "dashboard")}
+            title="Summary Dashboard"
+          >
+            Dashboard
+          </button>
           <button
             className="btn-icon"
             title="Export as Markdown"
             onClick={() => exportFindings(capture, "markdown")}
           >
-            📋 Export
+            Export
           </button>
           <button
             className="btn-icon"
@@ -226,14 +374,15 @@ export function CaptureView({ capture, onBack }: Props) {
         </div>
       </div>
 
-      {/* Left Sidebar — Connection List */}
+      {/* Left Sidebar */}
       <div className="sidebar">
         <div className="sidebar-header">
           <h2>Connections ({filteredFlows.length})</h2>
           <input
+            ref={searchRef}
             className="search-box"
             type="text"
-            placeholder='Filter: IP, protocol, or "show me slow connections"'
+            placeholder='Filter: IP, protocol, or "show me slow connections" (press /)'
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
@@ -250,25 +399,75 @@ export function CaptureView({ capture, onBack }: Props) {
               </button>
             ),
           )}
+          <select
+            className="group-select"
+            value={groupMode}
+            onChange={(e) => setGroupMode(e.target.value as GroupMode)}
+          >
+            <option value="none">No grouping</option>
+            <option value="destination">By destination</option>
+            <option value="protocol">By protocol</option>
+          </select>
         </div>
-        <div className="connection-list">
-          {filteredFlows.map((flow) => (
-            <ConnectionItem
-              key={flow.id}
-              flow={flow}
-              selected={flow.id === selectedFlowId}
-              onClick={() => setSelectedFlowId(flow.id)}
+        {/* Time range slider */}
+        {captureEnd > captureStart && (
+          <div className="time-range-bar">
+            <label>Time range</label>
+            <input
+              type="range"
+              min={0}
+              max={1000}
+              defaultValue={0}
+              className="time-slider"
+              onChange={(e) => {
+                const pct = Number(e.target.value) / 1000;
+                const rangeStart = captureStart + pct * (captureEnd - captureStart);
+                setTimeRange(pct > 0 ? [rangeStart, captureEnd] : null);
+              }}
             />
+            {timeRange && (
+              <button className="clear-range" onClick={() => setTimeRange(null)}>
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+        <div className="connection-list" ref={connectionListRef}>
+          {Array.from(grouped.entries()).map(([group, flows]) => (
+            <div key={group}>
+              {groupMode !== "none" && (
+                <div className="group-header">{group} ({flows.length})</div>
+              )}
+              {flows.map((flow) => (
+                <ConnectionItem
+                  key={flow.id}
+                  flow={flow}
+                  hostnames={hostnames}
+                  selected={flow.id === selectedFlowId}
+                  comparing={flow.id === compareFlowId}
+                  onClick={() => setSelectedFlowId(flow.id)}
+                  onCompare={() => handleCompareSelect(flow.id)}
+                />
+              ))}
+            </div>
           ))}
         </div>
       </div>
 
-      {/* Center — Timeline / Packets */}
+      {/* Center */}
       <div className="main-panel">
         <div className="main-panel-header">
           <h2>
             {selectedFlow
-              ? `${selectedFlow.srcIp} → ${selectedFlow.dstIp}`
+              ? <>
+                  <Copyable text={selectedFlow.srcIp}>
+                    {resolveIp(selectedFlow.srcIp, hostnames)}
+                  </Copyable>
+                  {" → "}
+                  <Copyable text={selectedFlow.dstIp}>
+                    {resolveIp(selectedFlow.dstIp, hostnames)}
+                  </Copyable>
+                </>
               : "Select a connection"}
           </h2>
           {selectedFlow && (
@@ -295,15 +494,66 @@ export function CaptureView({ capture, onBack }: Props) {
               >
                 Packets
               </button>
+              {compareFlow && (
+                <button
+                  className={`tab-btn ${viewTab === "compare" ? "active" : ""}`}
+                  onClick={() => setViewTab("compare")}
+                >
+                  Compare
+                </button>
+              )}
+              <button
+                className={`tab-btn ${viewTab === "dashboard" ? "active" : ""}`}
+                onClick={() => setViewTab("dashboard")}
+              >
+                Dashboard
+              </button>
             </div>
           )}
         </div>
         <div className="main-content">
-          {selectedFlow ? (
+          {viewTab === "dashboard" ? (
+            <SummaryDashboard capture={capture} hostnames={hostnames} />
+          ) : selectedFlow ? (
             viewTab === "timeline" ? (
               <Timeline events={selectedFlow.events} />
-            ) : (
+            ) : viewTab === "packets" ? (
               <PacketTable packets={selectedFlow.packets} />
+            ) : viewTab === "compare" && compareFlow ? (
+              <div className="compare-view">
+                <div className="compare-col">
+                  <h3>
+                    <Copyable text={selectedFlow.dstIp}>
+                      {resolveIp(selectedFlow.dstIp, hostnames)}
+                    </Copyable>
+                  </h3>
+                  <div className="compare-stats">
+                    <span>{formatBytes(selectedFlow.bytes)}</span>
+                    <span>{selectedFlow.packetCount} pkts</span>
+                    {selectedFlow.stats.rttMs != null && (
+                      <span>RTT {selectedFlow.stats.rttMs.toFixed(1)}ms</span>
+                    )}
+                  </div>
+                  <Timeline events={selectedFlow.events} />
+                </div>
+                <div className="compare-col">
+                  <h3>
+                    <Copyable text={compareFlow.dstIp}>
+                      {resolveIp(compareFlow.dstIp, hostnames)}
+                    </Copyable>
+                  </h3>
+                  <div className="compare-stats">
+                    <span>{formatBytes(compareFlow.bytes)}</span>
+                    <span>{compareFlow.packetCount} pkts</span>
+                    {compareFlow.stats.rttMs != null && (
+                      <span>RTT {compareFlow.stats.rttMs.toFixed(1)}ms</span>
+                    )}
+                  </div>
+                  <Timeline events={compareFlow.events} />
+                </div>
+              </div>
+            ) : (
+              <Timeline events={selectedFlow.events} />
             )
           ) : (
             <p style={{ color: "var(--text-tertiary)", padding: 24 }}>
@@ -332,20 +582,27 @@ export function CaptureView({ capture, onBack }: Props) {
 
 function ConnectionItem({
   flow,
+  hostnames,
   selected,
+  comparing,
   onClick,
+  onCompare,
 }: {
   flow: Flow;
+  hostnames: Record<string, string>;
   selected: boolean;
+  comparing: boolean;
   onClick: () => void;
+  onCompare: () => void;
 }) {
   const hasIssues = flow.findings.length > 0;
   const hasErrors = flow.findings.some((f) => f.severity === "error");
 
   return (
     <div
-      className={`connection-item ${selected ? "selected" : ""}`}
+      className={`connection-item ${selected ? "selected" : ""} ${comparing ? "comparing" : ""}`}
       onClick={onClick}
+      data-flow-id={flow.id}
     >
       <div className="connection-host">
         {hasIssues && (
@@ -353,11 +610,23 @@ function ConnectionItem({
             className={`connection-indicator ${hasErrors ? "error" : "warning"}`}
           />
         )}
-        {flow.dstIp}
+        <Copyable text={flow.dstIp}>
+          {resolveIp(flow.dstIp, hostnames)}
+        </Copyable>
       </div>
       <div className="connection-meta">
         {flow.protocol} &middot; {flow.packetCount} pkts &middot;{" "}
         {formatBytes(flow.bytes)}
+        <button
+          className="compare-btn"
+          title="Compare with selected"
+          onClick={(e) => {
+            e.stopPropagation();
+            onCompare();
+          }}
+        >
+          vs
+        </button>
       </div>
     </div>
   );

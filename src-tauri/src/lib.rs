@@ -5,23 +5,23 @@ mod sessionizer;
 mod timeline;
 
 use model::{CaptureOverview, Flow, FlowStats, PacketSummary};
+use std::collections::HashMap;
+use std::net::ToSocketAddrs;
 use std::path::Path;
+use std::sync::Mutex;
 
 const MAX_FILE_SIZE: u64 = 500 * 1024 * 1024; // 500 MB
 const ALLOWED_EXTENSIONS: &[&str] = &["pcap", "pcapng", "cap"];
 
 fn validate_pcap_path(path: &Path) -> Result<(), String> {
-    // Canonicalize to prevent path traversal
     let canonical = path
         .canonicalize()
         .map_err(|_| "File not found or inaccessible".to_string())?;
 
-    // Must be a file, not a directory or symlink to something unexpected
     if !canonical.is_file() {
         return Err("Path is not a regular file".into());
     }
 
-    // Validate extension
     let ext = canonical
         .extension()
         .and_then(|e| e.to_str())
@@ -34,7 +34,6 @@ fn validate_pcap_path(path: &Path) -> Result<(), String> {
         ));
     }
 
-    // Enforce file size limit
     let metadata = std::fs::metadata(&canonical)
         .map_err(|_| "Cannot read file metadata".to_string())?;
     if metadata.len() > MAX_FILE_SIZE {
@@ -46,6 +45,26 @@ fn validate_pcap_path(path: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn resolve_hostnames(ips: &[String]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for ip in ips {
+        // Try reverse DNS with a short timeout via socket addr lookup
+        let addr = format!("{}:0", ip);
+        if let Ok(mut addrs) = addr.to_socket_addrs() {
+            if let Some(sock) = addrs.next() {
+                // Use the system DNS resolver via std
+                if let Ok(host) = dns_lookup::lookup_addr(&sock.ip()) {
+                    // Only store if the hostname differs from the IP
+                    if host != *ip {
+                        map.insert(ip.clone(), host);
+                    }
+                }
+            }
+        }
+    }
+    map
 }
 
 #[tauri::command]
@@ -61,7 +80,6 @@ fn open_pcap(path: String) -> Result<CaptureOverview, String> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| path.clone());
 
-    // Decode packets via TShark
     let packets = decoder::decode_pcap(&canonical).map_err(|e| e.to_string())?;
     let total_packets = packets.len();
 
@@ -72,6 +90,7 @@ fn open_pcap(path: String) -> Result<CaptureOverview, String> {
             duration: 0.0,
             flows: vec![],
             findings: vec![],
+            hostnames: HashMap::new(),
         });
     }
 
@@ -79,7 +98,16 @@ fn open_pcap(path: String) -> Result<CaptureOverview, String> {
     let last_ts = packets.last().map(|p| p.timestamp).unwrap_or(0.0);
     let duration = last_ts - first_ts;
 
-    // Sessionize into flows
+    // Collect unique IPs for reverse DNS
+    let mut unique_ips: Vec<String> = packets
+        .iter()
+        .flat_map(|p| vec![p.src_ip.clone(), p.dst_ip.clone()])
+        .collect();
+    unique_ips.sort();
+    unique_ips.dedup();
+
+    let hostnames = resolve_hostnames(&unique_ips);
+
     let flow_map = sessionizer::sessionize(&packets);
 
     let mut flows: Vec<Flow> = Vec::new();
@@ -97,7 +125,6 @@ fn open_pcap(path: String) -> Result<CaptureOverview, String> {
             .map(|p| p.timestamp)
             .unwrap_or(0.0);
 
-        // Determine the "most interesting" protocol in the flow
         let protocol = flow_packets
             .iter()
             .rev()
@@ -105,14 +132,10 @@ fn open_pcap(path: String) -> Result<CaptureOverview, String> {
             .map(|p| p.protocol.clone())
             .unwrap_or_else(|| key.transport.clone());
 
-        // Build timeline
         let events = timeline::build_timeline(flow_packets);
-
-        // Run diagnostics
         let findings = diagnostics::analyze(&flow_id, &events);
         all_findings.extend(findings.clone());
 
-        // Compute stats
         let flow_duration = end_time - start_time;
         let throughput_bps = if flow_duration > 0.0 {
             (bytes as f64 * 8.0) / flow_duration
@@ -132,7 +155,6 @@ fn open_pcap(path: String) -> Result<CaptureOverview, String> {
             }
         });
 
-        // Build packet summaries for detail panel
         let packet_summaries: Vec<PacketSummary> = flow_packets
             .iter()
             .enumerate()
@@ -180,7 +202,6 @@ fn open_pcap(path: String) -> Result<CaptureOverview, String> {
         });
     }
 
-    // Sort flows by start time
     flows.sort_by(|a, b| a.start_time.partial_cmp(&b.start_time).unwrap());
 
     Ok(CaptureOverview {
@@ -189,7 +210,85 @@ fn open_pcap(path: String) -> Result<CaptureOverview, String> {
         duration,
         flows,
         findings: all_findings,
+        hostnames,
     })
+}
+
+struct CaptureState {
+    child: Option<std::process::Child>,
+    output_path: Option<String>,
+}
+
+#[tauri::command]
+fn start_capture(interface: String, state: tauri::State<'_, Mutex<CaptureState>>) -> Result<String, String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    if guard.child.is_some() {
+        return Err("A capture is already running".into());
+    }
+
+    let tmp_dir = std::env::temp_dir();
+    let output_path = tmp_dir
+        .join(format!("cesium-capture-{}.pcapng", uuid::Uuid::new_v4()))
+        .to_string_lossy()
+        .to_string();
+
+    let child = std::process::Command::new("tshark")
+        .args(["-i", &interface, "-w", &output_path])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start tshark: {}", e))?;
+
+    guard.child = Some(child);
+    guard.output_path = Some(output_path.clone());
+
+    Ok(output_path)
+}
+
+#[tauri::command]
+fn stop_capture(state: tauri::State<'_, Mutex<CaptureState>>) -> Result<String, String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    if let Some(mut child) = guard.child.take() {
+        // Send SIGTERM on Unix
+        #[cfg(unix)]
+        {
+            unsafe {
+                libc::kill(child.id() as i32, libc::SIGTERM);
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = child.kill();
+        }
+        let _ = child.wait();
+    }
+
+    guard.output_path.take().ok_or_else(|| "No capture was running".into())
+}
+
+#[tauri::command]
+fn list_interfaces() -> Result<Vec<String>, String> {
+    let output = std::process::Command::new("tshark")
+        .args(["-D"])
+        .output()
+        .map_err(|e| format!("Failed to run tshark: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let interfaces: Vec<String> = stdout
+        .lines()
+        .filter_map(|line| {
+            // Format: "1. en0 (Wi-Fi)" — extract the name
+            let parts: Vec<&str> = line.splitn(2, ". ").collect();
+            if parts.len() == 2 {
+                Some(parts[1].to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(interfaces)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -197,7 +296,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![open_pcap])
+        .manage(Mutex::new(CaptureState {
+            child: None,
+            output_path: None,
+        }))
+        .invoke_handler(tauri::generate_handler![
+            open_pcap,
+            start_capture,
+            stop_capture,
+            list_interfaces
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Cesium");
 }

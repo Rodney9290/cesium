@@ -115,4 +115,5 @@ pub struct CaptureOverview {
     pub duration: f64,
     pub flows: Vec<Flow>,
     pub findings: Vec<Finding>,
+    pub hostnames: std::collections::HashMap<String, String>,
 }
