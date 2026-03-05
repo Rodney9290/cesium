@@ -71,6 +71,8 @@ pub struct Flow {
     pub findings: Vec<Finding>,
     pub stats: FlowStats,
     pub packets: Vec<PacketSummary>,
+    #[serde(rename = "anomalyScore")]
+    pub anomaly_score: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

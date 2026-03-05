@@ -1,5 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import type { PacketSummary } from "../types";
+import { PacketHexViewer } from "./PacketHexViewer";
 
 interface Props {
   packets: PacketSummary[];
@@ -9,6 +10,7 @@ const PAGE_SIZE = 100;
 
 export function PacketTable({ packets }: Props) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [expandedFrame, setExpandedFrame] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const visible = useMemo(
@@ -18,6 +20,7 @@ export function PacketTable({ packets }: Props) {
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
+    setExpandedFrame(null);
   }, [packets]);
 
   const handleScroll = () => {
@@ -57,32 +60,50 @@ export function PacketTable({ packets }: Props) {
         </thead>
         <tbody>
           {visible.map((pkt) => (
-            <tr key={pkt.frameNumber}>
-              <td>{pkt.frameNumber}</td>
-              <td>{pkt.relativeTime.toFixed(6)}</td>
-              <td>{pkt.deltaTime > 0 ? pkt.deltaTime.toFixed(6) : "—"}</td>
-              <td>
-                {pkt.srcIp}
-                {pkt.srcPort != null ? `:${pkt.srcPort}` : ""}
-              </td>
-              <td>
-                {pkt.dstIp}
-                {pkt.dstPort != null ? `:${pkt.dstPort}` : ""}
-              </td>
-              <td>
-                <span className={`proto-badge ${pkt.protocol.toLowerCase()}`}>
-                  {pkt.protocol}
-                </span>
-              </td>
-              <td>{pkt.length}</td>
-              <td className="info-cell">{pkt.info}</td>
-            </tr>
+            <>
+              <tr
+                key={pkt.frameNumber}
+                className={expandedFrame === pkt.frameNumber ? "highlighted" : ""}
+                onClick={() =>
+                  setExpandedFrame(
+                    expandedFrame === pkt.frameNumber ? null : pkt.frameNumber,
+                  )
+                }
+                style={{ cursor: "pointer" }}
+              >
+                <td>{pkt.frameNumber}</td>
+                <td>{pkt.relativeTime.toFixed(6)}</td>
+                <td>{pkt.deltaTime > 0 ? pkt.deltaTime.toFixed(6) : "—"}</td>
+                <td>
+                  {pkt.srcIp}
+                  {pkt.srcPort != null ? `:${pkt.srcPort}` : ""}
+                </td>
+                <td>
+                  {pkt.dstIp}
+                  {pkt.dstPort != null ? `:${pkt.dstPort}` : ""}
+                </td>
+                <td>
+                  <span className={`proto-badge ${pkt.protocol.toLowerCase()}`}>
+                    {pkt.protocol}
+                  </span>
+                </td>
+                <td>{pkt.length}</td>
+                <td className="info-cell">{pkt.info}</td>
+              </tr>
+              {expandedFrame === pkt.frameNumber && (
+                <tr key={`${pkt.frameNumber}-hex`}>
+                  <td colSpan={8} className="hex-cell">
+                    <PacketHexViewer frameNumber={pkt.frameNumber} />
+                  </td>
+                </tr>
+              )}
+            </>
           ))}
         </tbody>
       </table>
       {visibleCount < packets.length && (
         <div className="load-more">
-          Showing {visibleCount} of {packets.length} packets
+          Showing {visibleCount} of {packets.length} packets — click a row to inspect
         </div>
       )}
     </div>

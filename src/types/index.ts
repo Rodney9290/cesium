@@ -33,6 +33,7 @@ export interface Flow {
   findings: Finding[];
   stats: FlowStats;
   packets: PacketSummary[];
+  anomalyScore: number;
 }
 
 export type EventKind =
