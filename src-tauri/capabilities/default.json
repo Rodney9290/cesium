@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nickel-org/nickel.rs/master/docs/schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for Cesium",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "shell:default",
+    "shell:allow-open",
+    "shell:allow-execute"
+  ]
+}
